@@ -2,7 +2,8 @@
 
 Based on your progress report, here is a step-by-step plan to build a minimal working version of your application. This focuses on getting a functional end-to-end system rather than a polished product.
 
-start the api with uvicorn api:app --reload
+start the api with: uvicorn api:app --reload
+open with: http://127.0.0.1:8000/docs
 
 ---
 
