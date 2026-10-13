@@ -44,6 +44,7 @@ def sqlite_db_path(tmp_path: Path):
 @pytest.fixture()
 def client(sqlite_db_path: Path):
     app.state.sqlite_db_path = str(sqlite_db_path)
+    app.state.mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
     with TestClient(app) as test_client:
         yield test_client
 
@@ -114,3 +115,42 @@ def test_mongo_tracking_is_unavailable_without_a_server(client: TestClient):
     response = client.get("/orders/O1/events")
     assert response.status_code == 503
     assert "MongoDB" in response.json()["detail"]
+
+
+def test_tracking_comparison_returns_both_results_and_timings(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    import api
+
+    class FakeCursor(list):
+        def sort(self, field: str, direction: int):
+            return self
+
+    class FakeCollection:
+        def find(self, query):
+            assert query == {"order_id": {"$in": ["O1"]}}
+            return FakeCursor(
+                [{"_id": "O1_accept", "order_id": "O1", "event_type": "accept"}]
+            )
+
+    monkeypatch.setattr(api, "get_tracking_collection", lambda: FakeCollection())
+    response = client.get("/compare/tracking/O1")
+
+    assert response.status_code == 200
+    result = response.json()
+    assert len(result["sql"]["results"]) == 1
+    assert result["sql"]["results"][0]["accept_latitude"] == 2.0
+    assert result["sql"]["results"][0]["delivery_longitude"] == 3.0
+    assert result["mongodb"]["results"][0]["event_type"] == "accept"
+    assert result["sql"]["execution_time_ms"] >= 0
+    assert result["mongodb"]["execution_time_ms"] >= 0
+
+
+def test_sqlite_connection_pool_reuses_connections(client: TestClient):
+    import api
+
+    with api.get_connection() as first_connection:
+        first_connection_id = id(first_connection)
+    with api.get_connection() as second_connection:
+        assert id(second_connection) == first_connection_id
+    assert app.state.sqlite_pool.created_connections == 1

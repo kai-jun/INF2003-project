@@ -6,7 +6,7 @@ Adjust FILENAMES and COLLECTION NAMES to match yours.
 
 import os
 import json
-from pymongo import MongoClient, GEOSPHERE, ASCENDING
+from pymongo import MongoClient, ASCENDING
 
 # ---------- Connection ----------
 client = MongoClient("mongodb://localhost:27017/")
@@ -23,7 +23,7 @@ PROCESSED = os.path.join(BASE_DIR, "processed")
 # Change these to your actual filenames + target collection names
 FILES = [
     ("mongo/delivery_events.json", "delivery_events"),
-    ("mongo/gps_tracking_logs.json",  "courier_tracking"),  
+    ("mongo/gps_tracking_logs.json", "tracking_logs"),
 ]
 
 
@@ -80,10 +80,8 @@ def create_indexes(collection_name):
         # if you build one; otherwise use a plain compound index:
         col.create_index([("lng", ASCENDING), ("lat", ASCENDING)])
 
-    # courier_tracking-style (bucketed pings with GeoJSON)
-    elif collection_name == "courier_tracking":
-        col.create_index([("courier_id", ASCENDING), ("date", ASCENDING)])
-        col.create_index([("pings.loc", GEOSPHERE)])
+    elif collection_name == "tracking_logs":
+        col.create_index([("order_id", ASCENDING), ("timestamp", ASCENDING)])
 
     print(f"✅ Indexes created for {collection_name}")
 

@@ -1,6 +1,10 @@
 import os
+import logging
+import queue
 import sqlite3
-from contextlib import closing
+import threading
+import time
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from typing import Any
 
@@ -13,8 +17,81 @@ from pydantic import BaseModel, Field
 APP_TITLE = "Last-Mile Delivery API"
 DEFAULT_SQLITE_DB_PATH = os.path.join(os.path.dirname(__file__), "delivery.db")
 DEFAULT_MONGO_URI = "mongodb://localhost:27017/"
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
-app = FastAPI(title=APP_TITLE)
+
+class SQLiteConnectionPool:
+    def __init__(self, database_path: str, max_connections: int = 5):
+        self.database_path = database_path
+        self.max_connections = max_connections
+        self.connections: queue.LifoQueue[sqlite3.Connection] = queue.LifoQueue(max_connections)
+        self.created_connections = 0
+        self.lock = threading.Lock()
+        self.closed = False
+
+    def _create_connection(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(
+            self.database_path,
+            timeout=10,
+            check_same_thread=False,
+        )
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON;")
+        return conn
+
+    def acquire(self) -> sqlite3.Connection:
+        if self.closed:
+            raise RuntimeError("SQLite connection pool is closed")
+        try:
+            return self.connections.get_nowait()
+        except queue.Empty:
+            with self.lock:
+                if self.closed:
+                    raise RuntimeError("SQLite connection pool is closed")
+                if self.created_connections < self.max_connections:
+                    self.created_connections += 1
+                    try:
+                        return self._create_connection()
+                    except Exception:
+                        self.created_connections -= 1
+                        raise
+        return self.connections.get()
+
+    def release(self, conn: sqlite3.Connection) -> None:
+        if self.closed:
+            conn.close()
+            return
+        self.connections.put(conn)
+
+    def close(self) -> None:
+        self.closed = True
+        while True:
+            try:
+                self.connections.get_nowait().close()
+            except queue.Empty:
+                break
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    application.state.sqlite_pool = SQLiteConnectionPool(get_sqlite_db_path())
+    try:
+        yield
+    finally:
+        application.state.sqlite_pool.close()
+        mongo_client = getattr(application.state, "mongo_client", None)
+        if mongo_client is not None:
+            mongo_client.close()
+            application.state.mongo_client = None
+            application.state.mongo_client_uri = None
+
+app = FastAPI(
+    title=APP_TITLE,
+    lifespan=lifespan,
+    redoc_url=None,
+    swagger_ui_parameters={"syntaxHighlight": False},
+)
 
 
 class OrderCreate(BaseModel):
@@ -42,11 +119,17 @@ def get_mongo_uri() -> str:
     return getattr(app.state, "mongo_uri", os.getenv("MONGO_URI", DEFAULT_MONGO_URI))
 
 
+@contextmanager
 def get_connection():
-    conn = sqlite3.connect(get_sqlite_db_path())
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON;")
-    return conn
+    pool = getattr(app.state, "sqlite_pool", None)
+    if pool is None:
+        pool = SQLiteConnectionPool(get_sqlite_db_path())
+        app.state.sqlite_pool = pool
+    conn = pool.acquire()
+    try:
+        yield conn
+    finally:
+        pool.release(conn)
 
 
 def parse_datetime(value: str | None) -> datetime | None:
@@ -88,11 +171,35 @@ def row_count(conn: sqlite3.Connection, table: str) -> int:
     return conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
 
 
+def get_mongo_client() -> MongoClient:
+    uri = get_mongo_uri()
+    client = getattr(app.state, "mongo_client", None)
+    if client is None or getattr(app.state, "mongo_client_uri", None) != uri:
+        if client is not None:
+            client.close()
+        client = MongoClient(uri, serverSelectionTimeoutMS=2000)
+        app.state.mongo_client = client
+        app.state.mongo_client_uri = uri
+    return client
+
+
 def get_mongo_collection():
     try:
-        client = MongoClient(get_mongo_uri(), serverSelectionTimeoutMS=2000)
+        client = get_mongo_client()
         client.admin.command("ping")
         return client["lastmile"]["delivery_events"]
+    except (PyMongoError, OSError):
+        raise HTTPException(
+            status_code=503,
+            detail="MongoDB is unavailable. Start MongoDB or configure MONGO_URI.",
+        ) from None
+
+
+def get_tracking_collection():
+    try:
+        client = get_mongo_client()
+        client.admin.command("ping")
+        return client["lastmile"]["tracking_logs"]
     except (PyMongoError, OSError):
         raise HTTPException(
             status_code=503,
@@ -107,7 +214,7 @@ def health() -> dict[str, str]:
 
 @app.get("/orders")
 def list_orders() -> list[dict[str, Any]]:
-    with closing(get_connection()) as conn:
+    with get_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM \"ORDER\" ORDER BY order_id"
         ).fetchall()
@@ -116,7 +223,7 @@ def list_orders() -> list[dict[str, Any]]:
 
 @app.get("/orders/{order_id}")
 def get_order(order_id: str) -> dict[str, Any]:
-    with closing(get_connection()) as conn:
+    with get_connection() as conn:
         row = fetch_order(conn, order_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Order not found")
@@ -125,7 +232,7 @@ def get_order(order_id: str) -> dict[str, Any]:
 
 @app.post("/orders", status_code=201)
 def create_order(order: OrderCreate) -> dict[str, Any]:
-    with closing(get_connection()) as conn:
+    with get_connection() as conn:
         if fetch_order(conn, order.order_id) is not None:
             raise HTTPException(status_code=409, detail="Order already exists")
 
@@ -149,7 +256,7 @@ def create_order(order: OrderCreate) -> dict[str, Any]:
 
 @app.put("/orders/{order_id}")
 def update_order(order_id: str, updates: OrderUpdate) -> dict[str, Any]:
-    with closing(get_connection()) as conn:
+    with get_connection() as conn:
         existing = fetch_order(conn, order_id)
         if existing is None:
             raise HTTPException(status_code=404, detail="Order not found")
@@ -175,7 +282,7 @@ def update_order(order_id: str, updates: OrderUpdate) -> dict[str, Any]:
 
 @app.delete("/orders/{order_id}")
 def delete_order(order_id: str) -> dict[str, str]:
-    with closing(get_connection()) as conn:
+    with get_connection() as conn:
         row = fetch_order(conn, order_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Order not found")
@@ -187,14 +294,14 @@ def delete_order(order_id: str) -> dict[str, str]:
 
 @app.get("/couriers")
 def list_couriers() -> list[dict[str, Any]]:
-    with closing(get_connection()) as conn:
+    with get_connection() as conn:
         rows = conn.execute("SELECT * FROM COURIER ORDER BY courier_id").fetchall()
         return [dict(row) for row in rows]
 
 
 @app.get("/couriers/{courier_id}/orders")
 def orders_by_courier(courier_id: str) -> list[dict[str, Any]]:
-    with closing(get_connection()) as conn:
+    with get_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM \"ORDER\" WHERE courier_id = ? ORDER BY order_id",
             (courier_id,),
@@ -204,7 +311,7 @@ def orders_by_courier(courier_id: str) -> list[dict[str, Any]]:
 
 @app.get("/orders/{order_id}/tracking")
 def order_tracking_sql(order_id: str) -> dict[str, Any]:
-    with closing(get_connection()) as conn:
+    with get_connection() as conn:
         if fetch_order(conn, order_id) is None:
             raise HTTPException(status_code=404, detail="Order not found")
 
@@ -226,6 +333,60 @@ def order_tracking_sql(order_id: str) -> dict[str, Any]:
         }
 
 
+@app.get("/compare/tracking/{order_id}")
+def compare_tracking(order_id: str) -> dict[str, Any]:
+    sql_started = time.perf_counter()
+    with get_connection() as conn:
+        sql_rows = conn.execute(
+            """
+            SELECT o.order_id,
+                   a.gps_time AS accept_timestamp,
+                   a.latitude AS accept_latitude,
+                   a.longitude AS accept_longitude,
+                   d.gps_time AS delivery_timestamp,
+                   d.latitude AS delivery_latitude,
+                   d.longitude AS delivery_longitude
+            FROM "ORDER" o
+            LEFT JOIN ACCEPTANCE_LOCATION a ON a.order_id = o.order_id
+            LEFT JOIN DELIVERY_LOCATION d ON d.order_id = o.order_id
+            WHERE o.order_id = ?
+            """,
+            (order_id,),
+        ).fetchall()
+        sql_results = [dict(row) for row in sql_rows]
+    sql_execution_time_ms = (time.perf_counter() - sql_started) * 1000
+
+    mongo_started = time.perf_counter()
+    query_values: list[str | int] = [order_id]
+    if order_id.isdigit():
+        query_values.append(int(order_id))
+    collection = get_tracking_collection()
+    mongo_results = list(
+        collection.find({"order_id": {"$in": query_values}}).sort("timestamp", 1)
+    )
+    for event in mongo_results:
+        event["_id"] = str(event["_id"])
+    mongo_execution_time_ms = (time.perf_counter() - mongo_started) * 1000
+
+    logger.info(
+        "tracking comparison order_id=%s SQL=%.3fms MongoDB=%.3fms",
+        order_id,
+        sql_execution_time_ms,
+        mongo_execution_time_ms,
+    )
+    return {
+        "order_id": order_id,
+        "sql": {
+            "execution_time_ms": round(sql_execution_time_ms, 3),
+            "results": sql_results,
+        },
+        "mongodb": {
+            "execution_time_ms": round(mongo_execution_time_ms, 3),
+            "results": mongo_results,
+        },
+    }
+
+
 @app.get("/orders/{order_id}/events")
 def order_tracking_mongo(order_id: str) -> dict[str, Any]:
     collection = get_mongo_collection()
@@ -237,7 +398,7 @@ def order_tracking_mongo(order_id: str) -> dict[str, Any]:
 
 @app.get("/analytics/delivery-time")
 def delivery_time_stats() -> dict[str, Any]:
-    with closing(get_connection()) as conn:
+    with get_connection() as conn:
         rows = conn.execute(
             "SELECT accept_time, delivery_time FROM \"ORDER\" WHERE accept_time IS NOT NULL AND delivery_time IS NOT NULL"
         ).fetchall()
@@ -262,7 +423,7 @@ def delivery_time_stats() -> dict[str, Any]:
 def courier_performance(
     limit: int = Query(default=10, ge=1)
 ) -> list[dict[str, Any]]:
-    with closing(get_connection()) as conn:
+    with get_connection() as conn:
         rows = conn.execute(
             """
             SELECT c.courier_id,
@@ -282,7 +443,7 @@ def courier_performance(
 
 @app.get("/analytics/delayed-orders")
 def delayed_orders() -> dict[str, list[dict[str, Any]]]:
-    with closing(get_connection()) as conn:
+    with get_connection() as conn:
         rows = conn.execute(
             """
             SELECT o.order_id, o.courier_id, o.aoi_id, o.accept_time, o.delivery_time,
