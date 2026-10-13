@@ -25,8 +25,8 @@ def sqlite_db_path(tmp_path: Path):
         "INSERT INTO AOI (aoi_id, aoi_type) VALUES ('A1', 'urban')"
     )
     conn.execute(
-        "INSERT INTO \"ORDER\" (order_id, courier_id, aoi_id, accept_time, delivery_time, ds) "
-        "VALUES ('O1', 'C1', 'A1', '2026-01-01 09:00:00', '2026-01-01 10:15:00', 'regular')"
+        "INSERT INTO \"ORDER\" (order_id, courier_id, aoi_id, accept_time, delivery_time, ds, is_delayed) "
+        "VALUES ('O1', 'C1', 'A1', '2026-01-01 09:00:00', '2026-01-01 10:15:00', 'regular', 1)"
     )
     conn.execute(
         "INSERT INTO ACCEPTANCE_LOCATION (order_id, gps_time, longitude, latitude) "
@@ -76,10 +76,11 @@ def test_orders_crud_and_analytics(client: TestClient):
 
     response = client.put(
         "/orders/O2",
-        json={"delivery_time": "2026-01-02 10:00:00", "ds": "priority"},
+        json={"delivery_time": "2026-01-02 10:00:00", "ds": "priority", "is_delayed": 1},
     )
     assert response.status_code == 200
     assert response.json()["ds"] == "priority"
+    assert response.json()["is_delayed"] == 1
 
     response = client.get("/couriers")
     assert response.status_code == 200
@@ -103,7 +104,7 @@ def test_orders_crud_and_analytics(client: TestClient):
 
     response = client.get("/analytics/delayed-orders")
     assert response.status_code == 200
-    assert isinstance(response.json()["orders"], list)
+    assert {order["order_id"] for order in response.json()["orders"]} == {"O1", "O2"}
 
     response = client.delete("/orders/O2")
     assert response.status_code == 200
@@ -154,3 +155,33 @@ def test_sqlite_connection_pool_reuses_connections(client: TestClient):
     with api.get_connection() as second_connection:
         assert id(second_connection) == first_connection_id
     assert app.state.sqlite_pool.created_connections == 1
+
+
+def test_dashboard_is_served_without_hiding_api_docs(client: TestClient):
+    dashboard = client.get("/")
+    assert dashboard.status_code == 200
+    assert "Operations overview" in dashboard.text
+    assert 'id="trackingMap"' in dashboard.text
+    assert 'id="delayedOrderRows"' in dashboard.text
+    assert client.get("/docs").status_code == 200
+    assert client.get("/openapi.json").status_code == 200
+
+
+def test_order_loader_preserves_delayed_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import load_data
+
+    (tmp_path / "Order.csv").write_text(
+        "order_id,courier_id,aoi_id,accept_time,delivery_time,is_delayed\n"
+        "O1,C1,A1,2026-01-01 09:00:00,2026-01-01 10:15:00,1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(load_data, "PROCESSED_DIR", tmp_path)
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        'CREATE TABLE "ORDER" (order_id TEXT, courier_id TEXT, aoi_id TEXT, '
+        'accept_time TEXT, delivery_time TEXT, is_delayed INTEGER)'
+    )
+
+    assert load_data.load_table(conn, "ORDER", "Order.csv") == 1
+    assert conn.execute('SELECT is_delayed FROM "ORDER" WHERE order_id = ?', ("O1",)).fetchone()[0] == 1
+    conn.close()

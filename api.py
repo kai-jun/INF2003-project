@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 from pydantic import BaseModel, Field
@@ -77,6 +78,16 @@ class SQLiteConnectionPool:
 async def lifespan(application: FastAPI):
     application.state.sqlite_pool = SQLiteConnectionPool(get_sqlite_db_path())
     try:
+        with get_connection() as conn:
+            order_columns = {
+                row["name"]
+                for row in conn.execute('PRAGMA table_info("ORDER")').fetchall()
+            }
+            if order_columns and "is_delayed" not in order_columns:
+                conn.execute(
+                    'ALTER TABLE "ORDER" ADD COLUMN is_delayed INTEGER NOT NULL DEFAULT 0'
+                )
+                conn.commit()
         yield
     finally:
         application.state.sqlite_pool.close()
@@ -101,6 +112,7 @@ class OrderCreate(BaseModel):
     accept_time: str | None = None
     delivery_time: str | None = None
     ds: str | None = None
+    is_delayed: int = Field(default=0, ge=0, le=1)
 
 
 class OrderUpdate(BaseModel):
@@ -109,6 +121,7 @@ class OrderUpdate(BaseModel):
     accept_time: str | None = None
     delivery_time: str | None = None
     ds: str | None = None
+    is_delayed: int | None = Field(default=None, ge=0, le=1)
 
 
 def get_sqlite_db_path() -> str:
@@ -237,8 +250,8 @@ def create_order(order: OrderCreate) -> dict[str, Any]:
             raise HTTPException(status_code=409, detail="Order already exists")
 
         conn.execute(
-            "INSERT INTO \"ORDER\" (order_id, courier_id, aoi_id, accept_time, delivery_time, ds) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO \"ORDER\" (order_id, courier_id, aoi_id, accept_time, delivery_time, ds, is_delayed) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 order.order_id,
                 order.courier_id,
@@ -246,6 +259,7 @@ def create_order(order: OrderCreate) -> dict[str, Any]:
                 order.accept_time,
                 order.delivery_time,
                 order.ds,
+                order.is_delayed,
             ),
         )
         conn.commit()
@@ -447,26 +461,22 @@ def delayed_orders() -> dict[str, list[dict[str, Any]]]:
         rows = conn.execute(
             """
             SELECT o.order_id, o.courier_id, o.aoi_id, o.accept_time, o.delivery_time,
-                   CASE WHEN o.ds IS NOT NULL AND lower(o.ds) LIKE '%delay%' THEN 1 ELSE 0 END AS is_delayed
+                   o.is_delayed
             FROM \"ORDER\" o
-            WHERE o.ds IS NOT NULL
-            ORDER BY o.order_id
+            WHERE o.is_delayed = 1
+            ORDER BY o.delivery_time DESC, o.order_id
             """
         ).fetchall()
-        delayed = [
-            {
-                "order_id": row["order_id"],
-                "courier_id": row["courier_id"],
-                "aoi_id": row["aoi_id"],
-                "accept_time": row["accept_time"],
-                "delivery_time": row["delivery_time"],
-            }
-            for row in rows
-            if row["is_delayed"] == 1
-        ]
-        return {"orders": delayed}
+        return {"orders": [dict(row) for row in rows]}
 
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(_, exc: HTTPException) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+app.mount(
+    "/",
+    StaticFiles(directory=os.path.join(os.path.dirname(__file__), "frontend"), html=True),
+    name="frontend",
+)

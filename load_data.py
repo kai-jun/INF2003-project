@@ -84,7 +84,10 @@ def load_table(conn, table, csv_file):
         df = df.rename(columns=rename_map[table])
 
     if table == "ORDER":
-        df = df[["order_id", "courier_id", "aoi_id", "accept_time", "delivery_time"]]
+        if "is_delayed" not in df.columns:
+            df["is_delayed"] = 0
+        df["is_delayed"] = pd.to_numeric(df["is_delayed"], errors="coerce").fillna(0).astype(int)
+        df = df[["order_id", "courier_id", "aoi_id", "accept_time", "delivery_time", "is_delayed"]]
     elif table == "ACCEPTANCE_LOCATION":
         df = df[["order_id", "gps_time", "longitude", "latitude"]]
     elif table == "DELIVERY_LOCATION":

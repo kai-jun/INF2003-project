@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f6f0">
+  <title>Last-mile | Operations</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet">
+  <link href="/assets/app.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" defer></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Last-mile operations home">
+        <span class="brand-mark"><i class="bi bi-box-seam"></i></span>
+        <span><strong>lastmile</strong><small>DELIVERY OPS</small></span>
+      </a>
+      <div class="nav-caption">WORKSPACE</div>
+      <nav class="main-nav" aria-label="Main navigation">
+        <button class="nav-link active" data-view-target="overview"><i class="bi bi-grid-1x2"></i><span>Overview</span></button>
+        <button class="nav-link" data-view-target="orders"><i class="bi bi-receipt"></i><span>Orders</span><span class="nav-count" id="navOrderCount">-</span></button>
+        <button class="nav-link" data-view-target="couriers"><i class="bi bi-person-badge"></i><span>Couriers</span></button>
+        <button class="nav-link" data-view-target="tracking"><i class="bi bi-signpost-2"></i><span>Tracking compare</span></button>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="live-indicator"><i></i> API CONNECTION</span>
+        <span class="sidebar-foot-note">Local operations workspace</span>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div class="breadcrumb-label"><span>WORKSPACE</span><i class="bi bi-chevron-right"></i><strong id="currentSection">Overview</strong></div>
+        <div class="topbar-right"><span class="system-status is-pending" id="apiStatus"><i></i><span>Connecting</span></span><button class="icon-button" id="refreshButton" type="button" title="Refresh data" aria-label="Refresh data"><i class="bi bi-arrow-clockwise"></i></button></div>
+      </header>
+
+      <div class="content-wrap">
+        <div class="alert alert-danger api-alert d-none" id="apiAlert" role="alert"></div>
+
+        <section class="view-panel active" id="overviewView" aria-labelledby="overviewTitle">
+          <div class="page-heading">
+            <div><p class="eyebrow">NETWORK SNAPSHOT</p><h1 id="overviewTitle">Operations overview</h1><p class="page-subtitle">Delivery activity across your courier network.</p></div>
+            <button class="btn btn-ink" data-view-target="orders" type="button"><i class="bi bi-arrow-right-short"></i> View orders</button>
+          </div>
+          <div class="stats-grid">
+            <article class="stat-card stat-accent"><div class="stat-label">TOTAL ORDERS</div><div class="stat-value" id="statOrders">--</div><div class="stat-note">Structured records</div><i class="bi bi-boxes stat-icon"></i></article>
+            <article class="stat-card"><div class="stat-label">AVG DELIVERY</div><div class="stat-value"><span id="statDelivery">--</span><small> hrs</small></div><div class="stat-note">Acceptance to delivery</div><i class="bi bi-stopwatch stat-icon"></i></article>
+            <article class="stat-card"><div class="stat-label">COURIERS</div><div class="stat-value" id="statCouriers">--</div><div class="stat-note">Registered in network</div><i class="bi bi-person-check stat-icon"></i></article>
+            <article class="stat-card stat-alert"><div class="stat-label">DELAYED ORDERS</div><div class="stat-value" id="statDelayed">--</div><div class="stat-note">Flagged in order data</div><i class="bi bi-exclamation-diamond stat-icon"></i></article>
+          </div>
+          <div class="section-heading"><div><p class="eyebrow">PERFORMANCE</p><h2>Courier delivery times</h2></div><span class="section-meta">Slowest averages first</span></div>
+          <div class="table-frame"><div class="table-responsive"><table class="table data-table mb-0"><thead><tr><th>COURIER</th><th>COMPLETED ORDERS</th><th>AVG DELIVERY</th><th></th></tr></thead><tbody id="overviewCourierRows"><tr><td colspan="4" class="empty-cell">Loading performance...</td></tr></tbody></table></div></div>
+          <div class="section-heading"><div><p class="eyebrow">EXCEPTIONS</p><h2>Delayed orders</h2></div><span class="section-meta" id="delayedOrderCount">Flagged deliveries</span></div>
+          <div class="table-frame"><div class="table-responsive"><table class="table data-table mb-0"><thead><tr><th>ORDER ID</th><th>COURIER</th><th>AOI</th><th>ACCEPTED</th><th>DELIVERED</th><th></th></tr></thead><tbody id="delayedOrderRows"><tr><td colspan="6" class="empty-cell">Loading delayed orders...</td></tr></tbody></table></div></div>
+        </section>
+
+        <section class="view-panel" id="ordersView" aria-labelledby="ordersTitle">
+          <div class="page-heading">
+            <div><p class="eyebrow">ORDER MANAGEMENT</p><h1 id="ordersTitle">Orders</h1><p class="page-subtitle">Browse, update, and track delivery records.</p></div>
+            <button class="btn btn-lime" id="newOrderButton" type="button"><i class="bi bi-plus-lg"></i> New order</button>
+          </div>
+          <div class="toolbar-row"><div class="search-box"><i class="bi bi-search"></i><input id="orderSearch" type="search" placeholder="Search order or courier" aria-label="Search orders"></div><span class="table-count" id="orderTableCount">Loading orders</span></div>
+          <div class="table-frame"><div class="table-responsive"><table class="table data-table mb-0"><thead><tr><th>ORDER ID</th><th>COURIER</th><th>ACCEPTED</th><th>DELIVERED</th><th>DURATION</th><th>CLASS</th><th></th></tr></thead><tbody id="orderRows"><tr><td colspan="7" class="empty-cell">Loading orders...</td></tr></tbody></table></div></div>
+          <div class="pagination-row"><span id="pageSummary">-</span><div><button class="icon-button" id="previousPage" type="button" title="Previous page" aria-label="Previous page"><i class="bi bi-chevron-left"></i></button><button class="icon-button" id="nextPage" type="button" title="Next page" aria-label="Next page"><i class="bi bi-chevron-right"></i></button></div></div>
+        </section>
+
+        <section class="view-panel" id="couriersView" aria-labelledby="couriersTitle">
+          <div class="page-heading"><div><p class="eyebrow">PEOPLE & CAPACITY</p><h1 id="couriersTitle">Couriers</h1><p class="page-subtitle">Courier roster and assigned order history.</p></div></div>
+          <div class="split-layout"><div class="table-frame"><div class="frame-heading"><strong>Courier roster</strong><span id="courierCount">-</span></div><div class="table-responsive"><table class="table data-table mb-0"><thead><tr><th>COURIER ID</th><th>REGION</th><th></th></tr></thead><tbody id="courierRows"><tr><td colspan="3" class="empty-cell">Loading couriers...</td></tr></tbody></table></div></div>
+            <div class="detail-panel"><div class="frame-heading"><strong id="courierOrdersTitle">Courier orders</strong><span id="courierOrdersCount">Select a courier</span></div><div id="courierOrdersBody" class="detail-empty"><i class="bi bi-person-lines-fill"></i><span>Select a courier to view assigned orders.</span></div></div></div>
+        </section>
+
+        <section class="view-panel" id="trackingView" aria-labelledby="trackingTitle">
+          <div class="page-heading"><div><p class="eyebrow">DUAL-DATABASE QUERY</p><h1 id="trackingTitle">Tracking comparison</h1><p class="page-subtitle">Compare relational location joins with MongoDB tracking events.</p></div></div>
+          <form id="trackingForm" class="tracking-query"><label for="trackingOrderId">ORDER ID</label><div class="tracking-input-wrap"><i class="bi bi-search"></i><input id="trackingOrderId" type="text" placeholder="Enter an order ID" required><button class="btn btn-lime" type="submit">Compare <i class="bi bi-arrow-right"></i></button></div></form>
+          <div id="trackingResults" class="tracking-results d-none">
+            <div class="section-heading tracking-heading"><div><p class="eyebrow">QUERY RESULTS</p><h2>Order <span id="trackingResultId"></span></h2></div><span class="section-meta">Execution time is measured per database query</span></div>
+            <div class="comparison-grid">
+              <article class="comparison-panel"><header><div><span class="source-kicker">RELATIONAL</span><h3>SQLite</h3></div><div class="query-time"><strong id="sqlTime">--</strong><small>milliseconds</small></div></header><div class="comparison-body" id="sqlTrackingBody"></div></article>
+              <article class="comparison-panel"><header><div><span class="source-kicker">DOCUMENT</span><h3>MongoDB</h3></div><div class="query-time query-time-green"><strong id="mongoTime">--</strong><small>milliseconds</small></div></header><div class="comparison-body" id="mongoTrackingBody"></div></article>
+            </div>
+            <div class="map-panel"><header><div><span class="source-kicker">GPS LOCATIONS</span><h3>Delivery map</h3></div><div class="map-legend"><span><i class="legend-dot acceptance-dot"></i>Acceptance</span><span><i class="legend-dot delivery-dot"></i>Delivery</span></div></header><div id="trackingMap" role="img" aria-label="Map showing order acceptance and delivery GPS locations"></div><div class="map-no-data d-none" id="mapNoData">No GPS coordinates are available for this order.</div></div>
+          </div>
+          <div class="tracking-empty" id="trackingEmpty"><i class="bi bi-signpost-split"></i><strong>Compare a tracking history</strong><span>Enter an order ID to query both databases.</span></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="modal fade" id="orderModal" tabindex="-1" aria-labelledby="orderModalTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
+      <form id="orderForm">
+        <div class="modal-header"><div><p class="eyebrow">ORDER RECORD</p><h2 class="modal-title" id="orderModalTitle">Create order</h2></div><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+        <div class="modal-body"><div class="form-grid">
+          <div class="field-group"><label for="formOrderId">Order ID</label><input id="formOrderId" name="order_id" class="form-control" required></div>
+          <div class="field-group"><label for="formCourierId">Courier ID</label><input id="formCourierId" name="courier_id" class="form-control"></div>
+          <div class="field-group"><label for="formAoiId">AOI ID</label><input id="formAoiId" name="aoi_id" class="form-control"></div>
+          <div class="field-group"><label for="formClass">Class / ds</label><input id="formClass" name="ds" class="form-control"></div>
+          <div class="field-group"><label for="formIsDelayed">Delay flag</label><select id="formIsDelayed" name="is_delayed" class="form-select"><option value="0">On time</option><option value="1">Delayed</option></select></div>
+          <div class="field-group"><label for="formAcceptTime">Accepted at</label><input id="formAcceptTime" name="accept_time" class="form-control" placeholder="YYYY-MM-DD HH:MM:SS"></div>
+          <div class="field-group"><label for="formDeliveryTime">Delivered at</label><input id="formDeliveryTime" name="delivery_time" class="form-control" placeholder="YYYY-MM-DD HH:MM:SS"></div>
+        </div><p class="form-hint">Use the timestamp format YYYY-MM-DD HH:MM:SS.</p><div class="form-error d-none" id="orderFormError" role="alert"></div></div>
+        <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button><button class="btn btn-ink" id="saveOrderButton" type="submit">Save order</button></div>
+      </form>
+    </div></div>
+  </div>
+</body>
+</html>

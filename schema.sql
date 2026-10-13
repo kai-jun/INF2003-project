@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS "ORDER" (
     accept_time     TEXT,
     delivery_time   TEXT,
     ds              TEXT,
+    is_delayed      INTEGER NOT NULL DEFAULT 0 CHECK (is_delayed IN (0, 1)),
     FOREIGN KEY (courier_id) REFERENCES COURIER(courier_id),
     FOREIGN KEY (aoi_id)     REFERENCES AOI(aoi_id)
 );
